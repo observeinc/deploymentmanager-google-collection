@@ -1,5 +1,8 @@
 # Allowed imports: see https://cloud.google.com/deployment-manager/docs/configuration/templates/import-python-libraries
 
+import typing
+
+
 class Variables(object):
     """Variables exists so that Deployment Manager properties (equivalent to Terraform variables) aren't strings.
     """
@@ -82,7 +85,7 @@ def GenerateConfig(context):
     var = get_variables(context)
     local = Locals(var)
 
-    resources = []
+    resources: typing.List[dict] = []
     resources.append(Resource(
         "google_pubsub_topic-this",
         # REST API schema: https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics
@@ -103,6 +106,7 @@ def GenerateConfig(context):
         # Schema override: gcloud beta deployment-manager type-providers describe pubsub-v1 --project gcp-types
         "gcp-types/pubsub-v1:projects.subscriptions",
         {
+            # If you change this, you should also change the output subscription
             "subscription": var.name,
             "labels": var.labels,
             "topic": "$(ref.google_pubsub_topic-this.name)",
@@ -181,15 +185,195 @@ def GenerateConfig(context):
         },
     ).as_dict())
 
-    # TODO: extensions in terraform-google-collection
+    if var.enable_extensions:
+        extension_var = get_extension_variables(
+            project_id=var.project_id,
+            region=var.region,
+            topic_id="$(ref.google_pubsub_topic-this.name)",
+            extensions_to_include=[
+                "export-instance-groups",
+                "export-service-accounts",
+                "export-cloud-scheduler"
+            ],
+            name_format=f"{var.name}-%s",
+        )
+        extension_local = ExtensionLocals(extension_var)
+        resources += extension_main(extension_var, extension_local)
+        resources += extension_cloud_scheduler(extension_var, extension_local)
 
     return {
         "resources": resources,
         "outputs": [{
             "name": "subscription_id",
-            "value": "$(ref.google_pubsub_subscription-this.name)",
+            "value": var.name,
         }, {
             "name": "poller_private_key_base64",
             "value": "$(ref.google_service_account_key-poller.privateKeyData)",
         }]
     }
+
+
+class ExtensionVariables:
+    def __init__(self) -> None:
+        self.project_id = ""
+        self.region = ""
+        self.topic_id = ""
+        self.name_format = ""
+        self.extensions_to_include = []
+
+
+def get_extension_variables(
+    project_id: str,
+    region: str,
+    topic_id: str,
+    extensions_to_include=[
+        "export-instance-groups",
+        "export-service-accounts",
+        "export-cloud-scheduler"
+    ],
+    name_format="extension-%s",
+) -> ExtensionVariables:
+    v = ExtensionVariables()
+    v.project_id = project_id
+    v.region = region
+    v.topic_id = topic_id
+    v.extensions_to_include = extensions_to_include
+    v.name_format = name_format
+    return v
+
+
+class ExtensionEntryPoint:
+    def __init__(self, description, entry_point, dependent_roles) -> None:
+        self.description = description
+        self.entry_point = entry_point
+        self.dependent_roles = dependent_roles
+
+
+class ExtensionLocals:
+    def __init__(self, var: ExtensionVariables) -> None:
+        self.base_roles = [
+            "roles/storage.objectViewer",
+            "roles/pubsub.publisher",
+        ]
+        self.function_env_vars = {
+            "PROJECT_ID": var.project_id,
+            "TOPIC_ID": var.topic_id,
+        }
+        self.entry_point = {
+            "export-instance-groups": ExtensionEntryPoint(
+                description="function for exporting compute instance groups and thier instances",
+                entry_point="list_instance_group",
+                dependent_roles=["roles/compute.viewer"],
+            ),
+            "export-service-accounts": ExtensionEntryPoint(
+                description="function for exporting service accounts",
+                entry_point="list_service_accounts",
+                dependent_roles=["roles/iam.serviceAccountViewer"],
+            ),
+            "export-cloud-scheduler": ExtensionEntryPoint(
+                description="function for exporting cloud scheduler jobs",
+                entry_point="list_cloud_scheduler_jobs",
+                dependent_roles=["roles/cloudscheduler.viewer"],
+            )
+        }
+
+        self.extensions = {
+            k: v
+            for k, v in self.entry_point.items()
+            if k in var.extensions_to_include
+        }
+        self.extensions_roles: typing.List[str] = []
+        for _, v in self.extensions.items():
+            self.extensions_roles.extend(v.dependent_roles)
+        self.roles = set(self.base_roles + self.extensions_roles)
+
+
+def extension_main(var: ExtensionVariables, local: ExtensionLocals) -> typing.List[dict]:
+    resources: typing.List[dict] = []
+    resources.append(Resource(
+        "google_service_account-cloud_functions",
+        "gcp-types/iam-v1:projects.serviceAccounts",
+        {
+            "accountId": var.name_format % "pub-sub-func",
+            "description":  "A service account for the Observe Cloud Functions",
+        }
+    ).as_dict())
+
+    for each_key in local.roles:
+        resources.append(Resource(
+            f"google_project_iam_member-cloud_functions-{each_key}",
+            # Schema: gcloud beta deployment-manager type-providers describe cloudresourcemanager-v1 --project gcp-types
+            "gcp-types/cloudresourcemanager-v1:virtual.projects.iamMemberBinding",
+            {
+                "resource": var.project_id,
+                "role": each_key,
+                "member": "serviceAccount:$(ref.google_service_account-cloud_functions.email)"
+            },
+        ).as_dict())
+
+    for each_key, each_value in local.extensions.items():
+        resources.append(Resource(
+            f"google_cloudfunctions_function-function-{each_key}",
+            # Schema: gcloud beta deployment-manager type-providers describe cloudfunctions-v1 --project gcp-types
+            "gcp-types/cloudfunctions-v1:projects.locations.functions",
+            {
+                "function": var.name_format % f"{each_key}-v2",
+                "parent": f"projects/{var.project_id}/locations/{var.region}",
+                "description": each_value.description,
+                "serviceAccountEmail": "$(ref.google_service_account-cloud_functions.email)",
+                "runtime": "python310",
+                "environmentVariables": local.function_env_vars,
+                "availableMemoryMb": 512,
+                "sourceArchiveUrl": "gs://observeinc/google-cloud-functions.zip",
+                "ingressSettings": "ALLOW_ALL",
+                "timeout": "120s",
+                "entryPoint": each_value.entry_point,
+                "httpsTrigger": {
+                    "securityLevel": "SECURE_ALWAYS",
+                }
+            },
+        ).as_dict())
+    return resources
+
+
+def extension_cloud_scheduler(var: ExtensionVariables, local: ExtensionLocals) -> typing.List[dict]:
+    """From terraform config in cloud_scheduler.tf"""
+    resources: typing.List[dict] = []
+    resources.append(Resource(
+        "google_service_account-cloud_scheduler",
+        "gcp-types/iam-v1:projects.serviceAccounts",
+        {
+            "accountId": var.name_format % "sched",
+            "description":  "A service account to allow the Observe Cloud Scheduler job to trigger some Cloud Functions",
+        }
+    ).as_dict())
+
+    resources.append(Resource(
+        "google_project_iam_member-cloud_scheduler_cloud_function_invoker",
+        "gcp-types/cloudresourcemanager-v1:virtual.projects.iamMemberBinding",
+        {
+            "resource": var.project_id,
+            "role": "roles/cloudfunctions.invoker",
+            "member": "serviceAccount:$(ref.google_service_account-cloud_scheduler.email)",
+        }
+    ).as_dict())
+
+    for each_key, each_value in {k: v for k, v in local.entry_point.items()}.items():
+        resources.append(Resource(
+            f"google_cloud_scheduler_job-this-{each_key}",
+            "gcp-types/cloudscheduler-v1:projects.locations.jobs",
+            {
+                "parent": f"projects/{var.project_id}/locations/{var.region}",
+                "name": var.name_format % each_value.entry_point,
+                "description": "Trigger the Cloud Function",
+                "schedule": "*/5  * * * *",
+                "httpTarget": {
+                    "httpMethod": "POST",
+                    "uri": f"$(ref.google_cloudfunctions_function-function-{each_key}.httpsTrigger.url)",
+                    "oidcToken": {
+                        "serviceAccountEmail": "$(ref.google_service_account-cloud_scheduler.email)",
+                    }
+                },
+            }
+        ).as_dict())
+    return resources
