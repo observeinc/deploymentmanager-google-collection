@@ -187,18 +187,25 @@ def GenerateConfig(context):
     # Schema override: gcloud beta deployment-manager type-providers describe logging-v2 --project gcp-types
     sink_type = f"gcp-types/logging-v2:{local.resource_type}.sinks"
 
+    sink_properties = {
+        "sink": var.name,
+        "destination": f"pubsub.googleapis.com/$(ref.google_pubsub_topic-this.name)",
+        "filter": var.logging_filter,
+        "description": "Exports logs to the Observe PubSub topic",
+        "exclusions": var.logging_exclusions,
+    }
+    if local.resource_type == "projects":
+        sink_properties["project"] = local.resource_id
+    elif local.resource_type == "folders":
+        sink_properties["folder"] = local.resource_id
+    elif local.resource_type == "organizations":
+        sink_properties["organization"] = local.resource_id
+
     resources.append(
         Resource(
             "google_logging_sink-this",
             sink_type,
-            {
-                "parent": var.resource,
-                "sink": var.name,
-                "destination": f"pubsub.googleapis.com/$(ref.google_pubsub_topic-this.name)",
-                "filter": var.logging_filter,
-                "description": "Exports logs to the Observe PubSub topic",
-                "exclusions": var.logging_exclusions,
-            },
+            sink_properties,
         ).as_dict()
     )
 
@@ -272,6 +279,10 @@ def GenerateConfig(context):
         "resources": resources,
         "outputs": [
             {
+                "name": "project_id",
+                "value": local.project,
+            },
+            {
                 "name": "subscription_id",
                 "value": var.name,
             },
@@ -298,12 +309,15 @@ def function_tf(var: Variables, local: Locals) -> typing.List[dict]:
 
     for each_key in var.function_roles:
         name = f"google_iam_member-cloud_functions-{each_key}"
+        
 
         # Schema: gcloud beta deployment-manager type-providers describe cloudresourcemanager-v1 --project gcp-types
-        # gcloud beta deployment-manager type-providers describe cloudresourcemanager-v1 --project gcp-types
+        # gcloud beta deployment-manager type-providers describe cloudresourcemanager-v2 --project gcp-types
         if local.resource_type == "folders":
+            r = var.resource
             type_ = f"gcp-types/cloudresourcemanager-v2:virtual.{local.resource_type}.iamMemberBinding"
         else:
+            r = local.resource_id
             type_ = f"gcp-types/cloudresourcemanager-v1:virtual.{local.resource_type}.iamMemberBinding"
 
         resources.append(
@@ -311,7 +325,7 @@ def function_tf(var: Variables, local: Locals) -> typing.List[dict]:
                 name,
                 type_,
                 {
-                    "resource": local.resource_id,
+                    "resource": r,
                     "role": each_key,
                     "member": "serviceAccount:$(ref.google_service_account-cloudfunction.email)",
                 },
