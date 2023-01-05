@@ -6,6 +6,7 @@ changelog:
 release:
 	semtag final -s minor
 	gcloud storage cp main.py gs://observeinc/deploymentmanager-google-collection-`semtag getcurrent`.py
+	gcloud storage cp main.py gs://observeinc/deploymentmanager-google-collection-latest.py
 
 .PHONY: create
 create:
