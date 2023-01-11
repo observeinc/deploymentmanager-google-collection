@@ -26,6 +26,7 @@ class Variables(object):
         self.function_available_memory_mb = ""
         self.function_timeout = 0
         self.function_max_instances = 0
+        self.function_disable_logging = False
         self.poller_roles = []
 
         self.region = ""
@@ -85,19 +86,27 @@ def get_variables(context) -> Variables:
         raise Exception("'enable_function' should be 'True' or 'False'")
     var.function_bucket = properties.get("function_bucket", "observeinc")
     var.function_object = properties.get(
-        "function_object", "google-cloud-functions-v0.1.0.zip"
+        "function_object", "google-cloud-functions-v0.2.0.zip"
     )
-    var.function_schedule = properties.get("function_schedule", "*/15  * * * *")
+    var.function_schedule = properties.get("function_schedule", "*/15 * * * *")
     var.function_available_memory_mb = int(
         properties.get("function_available_memory_mb", "256")
     )
     var.function_timeout = properties.get("function_timeout", "300s")
     var.function_max_instances = int(properties.get("function_max_instances", 5))
 
+    function_disable_logging = properties.get("function_disable_logging", "False")
+    if function_disable_logging == "True":
+        var.function_disable_logging = True
+    elif enable_function == "False":
+        var.function_disable_logging = False
+    else:
+        raise Exception("'function_disable_logging' should be 'True' or 'False'")
+
     var.poller_roles = json.loads(
         properties.get(
             "poller_roles",
-            '["roles/monitoring.viewer", "roles/cloudasset.viewer", "roles/browser"]',
+            '["roles/monitoring.viewer"]',
         )
     )
 
@@ -309,7 +318,6 @@ def function_tf(var: Variables, local: Locals) -> typing.List[dict]:
 
     for each_key in var.function_roles:
         name = f"google_iam_member-cloud_functions-{each_key}"
-        
 
         # Schema: gcloud beta deployment-manager type-providers describe cloudresourcemanager-v1 --project gcp-types
         # gcloud beta deployment-manager type-providers describe cloudresourcemanager-v2 --project gcp-types
@@ -345,6 +353,13 @@ def function_tf(var: Variables, local: Locals) -> typing.List[dict]:
         ).as_dict()
     )
 
+    func_env_vars = {
+        "PARENT": var.resource,
+        "TOPIC_ID": "$(ref.google_pubsub_topic-this.name)",
+    }
+    if var.function_disable_logging:
+        func_env_vars["DISABLE_LOGGING"] = "ok"
+
     resources.append(
         Resource(
             f"google_cloudfunctions_function-this",
@@ -356,10 +371,7 @@ def function_tf(var: Variables, local: Locals) -> typing.List[dict]:
                 "description": "Polls data from the Google Cloud API and sends to the Observe Pub/Sub topic.",
                 "serviceAccountEmail": "$(ref.google_service_account-cloudfunction.email)",
                 "runtime": "python310",
-                "environmentVariables": {
-                    "PARENT": var.resource,
-                    "TOPIC_ID": "$(ref.google_pubsub_topic-this.name)",
-                },
+                "environmentVariables": func_env_vars,
                 "httpsTrigger": {
                     "securityLevel": "SECURE_ALWAYS",
                 },
@@ -407,6 +419,7 @@ def function_tf(var: Variables, local: Locals) -> typing.List[dict]:
                 "name": var.name,
                 "description": "Triggers the Cloud Function",
                 "schedule": var.function_schedule,
+                "timeZone": "UTC",
                 "httpTarget": {
                     "httpMethod": "POST",
                     "uri": f"$(ref.google_cloudfunctions_function-this.httpsTrigger.url)",
