@@ -98,7 +98,7 @@ def get_variables(context) -> Variables:
     function_disable_logging = properties.get("function_disable_logging", "False")
     if function_disable_logging == "True":
         var.function_disable_logging = True
-    elif enable_function == "False":
+    elif function_disable_logging == "False":
         var.function_disable_logging = False
     else:
         raise Exception("'function_disable_logging' should be 'True' or 'False'")
