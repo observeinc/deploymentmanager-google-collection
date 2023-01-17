@@ -7,9 +7,16 @@ All notable changes to this project will be documented in this file.
 
 
 
-<a name="v0.3.0"></a>
-## [v0.3.0] - 0001-01-01
+<a name="v0.4.0"></a>
+## [v0.4.0] - 0001-01-01
 
+
+
+<a name="v0.3.0"></a>
+## [v0.3.0] - 2023-01-17
+
+- fix: fix function_disable_logging parameter
+- chore: update changelog
 
 
 <a name="v0.2.0"></a>
@@ -40,6 +47,7 @@ be in.
 instead of just for the created pubsub topics and subscriptions.
 
 
-[Unreleased]: https://github.com/observeinc/deploymentmanager-google-collection/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/observeinc/deploymentmanager-google-collection/compare/v0.4.0...HEAD
+[v0.4.0]: https://github.com/observeinc/deploymentmanager-google-collection/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/observeinc/deploymentmanager-google-collection/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/observeinc/deploymentmanager-google-collection/compare/v0.1.0...v0.2.0
