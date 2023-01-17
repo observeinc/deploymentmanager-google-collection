@@ -90,7 +90,7 @@ def get_variables(context) -> Variables:
     )
     var.function_schedule = properties.get("function_schedule", "*/15 * * * *")
     var.function_available_memory_mb = int(
-        properties.get("function_available_memory_mb", "256")
+        properties.get("function_available_memory_mb", "512")
     )
     var.function_timeout = properties.get("function_timeout", "300s")
     var.function_max_instances = int(properties.get("function_max_instances", 5))
